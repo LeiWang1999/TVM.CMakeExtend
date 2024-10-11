@@ -1,347 +1,274 @@
-<div align="center">
+# TVM.CMakeExtend
 
-# Tile Language (tile-lang)
+A modular approach to extend TVM without modifying its core code.
 
-</div>
+## Introduction
 
-Tile Language (**tile-lang**) is an extension of [Apache TVM](https://tvm.apache.org/) designed to facilitate the development of simple yet high-performance GPU kernels. Currently, **tile-lang** supports CUDA devices with architectures including Ampere (sm_80+), Turing (sm_75), and Volta (sm_70).
+`TVM.CMakeExtend` is a template project that demonstrates how to extend [Apache TVM](https://github.com/apache/tvm) by adding custom passes, code generators, or other functionalities without directly modifying the core TVM source code. This approach leverages CMake's modular build system to separate your custom extensions from TVM's core, facilitating easier maintenance, updates, and collaboration.
 
-## Features
+This project serves as a reference for developers who are building projects based on TVM and wish to avoid the complexities and pitfalls of forking and modifying TVM directly.
 
-- **Simplified Syntax**: Write GPU kernels with a more straightforward and expressive syntax.
-- **High Performance**: Achieve performance comparable to manually optimized implementations.
-- **Advanced Operations**: Support for complex operations like convolutions, flash-attention, and normalizations.
-- **Compatibility**: Works with modern CUDA architectures.
+## Background
 
-## OP Examples
+When building projects on top of TVM, it's common to encounter scenarios where the current capabilities of TVM are insufficient, necessitating modifications or extensions to its core functionalities. Traditionally, developers have forked TVM and directly altered its source code, adding new passes, custom nodes, or code generators. While this method works, it introduces several challenges:
 
-- [Matrix Multiplication](#quick-start)
-- [Flash Attention](#flash-attention)
-- [Dequantization GEMM](#dequantization-gemm)
-- [RetNet](#retina-net)
-- [MAMBA](#mamba)
+- **Maintenance Overhead**: Keeping the forked version up-to-date with the upstream TVM changes becomes cumbersome.
+- **Collaboration Difficulties**: Developers contributing to your project also need to navigate your modified version of TVM.
+- **Upstream Integration**: Changes are often too specific or hacky to be merged back into the main TVM repository.
+- **Dependency Conflicts**: Direct modifications can lead to conflicts with other projects or dependencies that rely on the standard TVM.
 
-## Installation
+To address these issues, `TVM.CMakeExtend` proposes a solution that maintains a clean separation between TVM's core and your custom extensions.
 
-We currently provide three ways to install **tile-lang**:
- - [Install from Source (using your own TVM installation)](#install-from-source-with-your-own-tvm-installation)
- - [Install from Source (using the bundled TVM submodule)](#install-from-source-with-our-tvm-submodule)
- - [Install Using the Provided Script](#install-with-provided-script)
+## Solution Overview
 
+This project demonstrates how to:
 
-### Method 1: Install from Source (using your own TVM installation)
+- **Keep TVM as an Independent Module**: Treat TVM as an external dependency, either as a submodule or by linking to a prebuilt version.
+- **Use CMake for Modular Builds**: Utilize CMake to build your custom code separately, linking against the TVM libraries without integrating your code into TVM's source tree.
+- **Avoid Code Duplication and Conflicts**: By not modifying TVM directly, you avoid merge conflicts and can benefit from the latest updates in TVM without additional overhead.
+- **Facilitate Collaboration**: Other developers can contribute to your project without needing to navigate a custom version of TVM.
 
-If you already have a compatible TVM installation, follow these steps:
+## Repository Structure
 
-1. **Clone the Repository:**
-
-    ```bash
-    git clone --recursive https://github.com/TileLang/tile-lang
-    cd tile-lang
-    ```
-
-   > **Note**: Use the `--recursive` flag to include necessary submodules.
-
-2. **Configure Build Options:**
-
-    Create a build directory and specify your existing TVM path:
-
-    ```bash
-    mkdir build
-    cd build
-    cmake .. -DTVM_PREBUILD_PATH=/your/path/to/tvm/build  # e.g., /workspace/tvm/build
-    make -j 16
-    ```
-
-3. **Set Environment Variables:**
-
-    Update `PYTHONPATH` to include the `tile-lang` Python module:
-
-    ```bash
-    export PYTHONPATH=/your/path/to/tile-lang/python:$PYTHONPATH
-    # TVM_IMPORT_PYTHON_PATH is used by 3rdparty framework to import tvm
-    export TVM_IMPORT_PYTHON_PATH=/your/path/to/tvm/python
-    ```
-
-### Method 2: Install from Source (using the bundled TVM submodule)
-
-If you prefer to use the built-in TVM version, follow these instructions:
-
-1. **Clone the Repository:**
-
-    ```bash
-    git clone --recursive https://github.com/TileLang/tile-lang
-    cd tile-lang
-    ```
-
-   > **Note**: Ensure the `--recursive` flag is included to fetch submodules.
-
-2. **Configure Build Options:**
-
-    Copy the configuration file and enable the desired backends (e.g., LLVM and CUDA):
-
-    ```bash
-    mkdir build
-    cp 3rdparty/tvm/cmake/config.cmake build
-    cd build
-    echo "set(USE_LLVM ON)" >> config.cmake
-    echo "set(USE_CUDA ON)" >> config.cmake
-    cmake ..
-    make -j 16
-    ```
-
-   The build outputs (e.g., `libtilelang.so`, `libtvm.so`, `libtvm_runtime.so`) will be generated in the `build` directory.
-
-3. **Set Environment Variables:**
-
-    Ensure the `tile-lang` Python package is in your `PYTHONPATH`:
-
-    ```bash
-    export PYTHONPATH=/your/path/to/tile-lang/python:$PYTHONPATH
-    ```
-
-### Method 3: Install Using the Provided Script
-
-For a simplified installation, use the provided script:
-
-1. **Clone the Repository:**
-
-    ```bash
-    git clone --recursive https://github.com/TileLang/tile-lang
-    cd tile-lang
-    ```
-
-2. **Run the Installation Script:**
-
-    ```bash
-    bash install.sh
-    ```
-
-This script automates the setup, including submodule initialization and configuration.
-
-### Quick Start
-
-Here's how you can get started with a simple GEMM (General Matrix Multiplication) example:
-
-```python
-import tilelang
-from tilelang import Profiler
-import tilelang.language as T
-
-def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
-    @T.prim_func
-    def main(
-        A: T.Buffer((M, K), dtype),
-        B: T.Buffer((K, N), dtype),
-        C: T.Buffer((M, N), dtype),
-    ):
-        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128) as (bx, by):
-            A_shared = T.alloc_shared((block_M, block_K), dtype)
-            B_shared = T.alloc_shared((block_K, block_N), dtype)
-            C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
-
-            T.clear(C_local)
-            for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=3):
-                T.copy(A[by * block_M, k * block_K], A_shared)
-                T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local)
-
-            T.copy(C_local, C[by * block_M, bx * block_N])
-
-    return main
-
-func = matmul(1024, 1024, 1024, 128, 128, 32)
-
-print(func)
-
-rt_mod, params = tilelang.lower(func)
-
-profiler = Profiler(rt_mod, params, result_idx=[2])
-
-import torch
-a = torch.randn(1024, 1024).cuda().half()
-b = torch.randn(1024, 1024).cuda().half()
-
-c = profiler(a, b)
-
-ref_c = a @ b
-
-print(c)
-print(ref_c)
-
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-
-# Get CUDA Source
-print(rt_mod.imported_modules[0].get_source())
+```
+TVM.CMakeExtend/
+├── 3rdparty/
+│   └── tvm/                 # Submodule pointing to TVM
+├── build/                   # Build directory
+├── include/                 # Custom header files
+├── src/                     # Custom source files (passes, codegens, etc.)
+├── python/
+│   └── your_project/        # Python bindings and extensions
+├── CMakeLists.txt           # Main CMake configuration
+└── README.md                # This README file
 ```
 
-TL also provide interface for users to manupulate the memory layout, pipeline and enable rasterization for better L2 Cache Locality. Here is an example of how to use the memory layout and rasterization:
+## Getting Started
+
+### Prerequisites
+
+- CMake (version 3.13 or higher)
+- A C++17 compatible compiler
+- Optional: CUDA toolkit if working with GPU code
+- Python 3.6 or higher (for Python bindings)
+
+### Clone the Repository
+
+```bash
+git clone --recursive https://github.com/LeiWang1999/TVM.CMakeExtend.git
+```
+
+### Building the Project
+
+You have two options:
+
+1. **Use a Prebuilt TVM**
+
+   If you already have TVM installed or built elsewhere (e.g., via `pip install apache-tvm`), you can link against it.
+
+   ```bash
+   mkdir build && cd build
+   cmake .. -DTVM_PREBUILD_PATH=/path/to/tvm/build
+   make -j$(nproc)
+   ```
+
+   Replace `/path/to/tvm/build` with the actual path to your TVM build directory containing `libtvm.so` and `libtvm_runtime.so`.
+
+2. **Build TVM from Source**
+
+   If you prefer to build TVM from source along with your project:
+
+   ```bash
+   mkdir build && cd build
+   cp ../3rdparty/tvm/cmake/config.cmake .
+   # Edit config.cmake to enable desired features
+   echo "set(USE_LLVM ON)" >> config.cmake
+   echo "set(USE_CUDA ON)" >> config.cmake
+   cmake ..
+   make -j$(nproc)
+   ```
+
+   This will build both TVM and your custom extensions.
+
+### Environment Setup
+
+Ensure that the built libraries are discoverable at runtime:
+
+- **Library Paths**: Add the paths to `libtvm.so`, `libtvm_runtime.so`, and your custom shared libraries to your `LD_LIBRARY_PATH` (or equivalent) environment variable.
+- **Python Paths**: Update `PYTHONPATH` to include TVM's and your project's Python packages.
+
+### Using Your Custom Extensions in Python
+
+Your custom passes or functionalities can be registered and accessed from Python.
+
+For example, in your C++ code:
+
+```cpp
+#include <tvm/tir/transform.h>
+
+tvm::transform::Pass MyCustomPass() {
+    // Your pass implementation
+}
+
+TVM_REGISTER_GLOBAL("my_project.transform.MyCustomPass")
+.set_body_typed(MyCustomPass);
+```
+
+In Python:
 
 ```python
-import tilelang.language as T
-from bitblas.tl.utils import (
-    make_swizzle_layout,
+import tvm
+import your_project
+
+mod = ...  # your IRModule
+mod = tvm.transform.Sequential([
+    your_project.transform.MyCustomPass(),
+])(mod)
+```
+
+## Detailed Explanation
+
+### CMake Modular Build
+
+The key to this approach is the CMake configuration that allows you to build your project separately while linking against TVM.
+
+**Using Prebuilt TVM Libraries**
+
+```cmake
+if (DEFINED TVM_PREBUILD_PATH)
+    message(STATUS "Using prebuilt TVM from ${TVM_PREBUILD_PATH}")
+    add_library(tvm SHARED IMPORTED)
+    set_target_properties(tvm PROPERTIES
+        IMPORTED_LOCATION "${TVM_PREBUILD_PATH}/libtvm.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${TVM_PREBUILD_PATH}/../include"
+    )
+    add_library(tvm_runtime SHARED IMPORTED)
+    set_target_properties(tvm_runtime PROPERTIES
+        IMPORTED_LOCATION "${TVM_PREBUILD_PATH}/libtvm_runtime.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${TVM_PREBUILD_PATH}/../include"
+    )
+else()
+    message(STATUS "Building TVM from source")
+    add_subdirectory(${TVM_SOURCE_DIR} tvm EXCLUDE_FROM_ALL)
+endif()
+```
+
+This configuration checks if `TVM_PREBUILD_PATH` is defined:
+
+- If it is, it treats TVM as a prebuilt library and links against it.
+- If not, it adds TVM as a subdirectory to build it from source.
+
+**Building Your Custom Extensions**
+
+```cmake
+file(GLOB_RECURSE CUSTOM_SRCS src/*.cc)
+add_library(custom_objs OBJECT ${CUSTOM_SRCS})
+set(CUSTOM_INCLUDES
+    ${TVM_SOURCE_DIR}/include
+    ${TVM_SOURCE_DIR}/src
+    ${TVM_SOURCE_DIR}/3rdparty/dlpack/include
+    ${TVM_SOURCE_DIR}/3rdparty/dmlc-core/include
 )
-
-def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
-    @T.prim_func
-    def main(
-        A: T.Buffer((M, K), dtype),
-        B: T.Buffer((K, N), dtype),
-        C: T.Buffer((M, N), dtype),
-    ):
-        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128) as (bx, by):
-            A_shared = T.alloc_shared((block_M, block_K), dtype)
-            B_shared = T.alloc_shared((block_K, block_N), dtype)
-            C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
-
-            
-            # Apply memory layout optimizations
-            # Or you can define your own memory layout
-            T.annotate_layout({
-                A_shared: make_swizzle_layout(A_shared),
-                B_shared: make_swizzle_layout(B_shared),
-            })
-
-            # Enable rasterization for better L2 Cache Locality
-            T.use_swizzle(panel_size=10, enable=enable_rasterization)
-
-            # Clear the local buffer
-            T.clear(C_local)
-
-            # Auto pipeline the computation
-            for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=3):
-                T.copy(A[by * block_M, k * block_K], A_shared)
-
-                # Instead of using
-                # T.copy(B[k * block_K, bx * block_N], B_shared)
-                # we can also use Parallel to auto map the thread
-                # bindings and vectorize the copy operation.
-                for k, j in T.Parallel(block_K, block_N):
-                    B_shared[k, j] = B[ko * block_K + k, bx * block_N + j]
-
-                T.gemm(A_shared, B_shared, C_local)
-
-            T.copy(C_local, C[by * block_M, bx * block_N])
-
-    return main
+target_include_directories(custom_objs PRIVATE ${CUSTOM_INCLUDES})
 ```
 
-Even though this is a simple example, **tile-lang** can be used to write more complex operations, including convolutions, flash-attention-v2 (forward & backward), and normalizations. These examples can be found under the `tl_scripts` folder.
+This sets up your custom source files and includes TVM's headers for compilation.
 
-The performance of our flash-attention implementation is comparable to manually optimized versions. See the [performance comparison](./tl_doc/flash_perf.md) for more details.
+### Handling Python Bindings
 
-## Operator Examples
+To ensure that your custom extensions are properly registered with TVM's Python API:
 
-### Flash Attention
+- **Load Custom Libraries Before Importing TVM**: Load your custom shared libraries before importing `tvm` in Python to ensure that the global functions are registered.
 
-Below is an example of implementing Flash Attention using **tile-lang**:
+- **Modify `__init__.py`**: In your Python package's `__init__.py`, handle environment variables and library loading:
+
+  ```python
+  import os
+  import sys
+
+  # Set up environment variables
+  os.environ['TVM_LIBRARY_PATH'] = '/path/to/your/libs'
+
+  # Load custom libraries
+  from .libinfo import find_lib_path
+  _LIBS = find_lib_path()
+  for lib in _LIBS:
+      tvm.lib.load_library(lib)
+
+  import tvm
+  ```
+
+### Custom Library Loader (`libinfo.py`)
+
+Implement a custom library finder that locates your shared libraries at runtime.
 
 ```python
-@T.prim_func
-def flash_attention_v3(
-    Q: T.Buffer(shape, dtype),
-    K: T.Buffer(shape, dtype),
-    V: T.Buffer(shape, dtype),
-    Output: T.Buffer(shape, dtype),
-):
-    with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=thread_num) as (bx, by, bz):
-        Q_shared = T.alloc_shared([block_M, dim], dtype)
-        K_shared = T.alloc_shared([block_N, dim], dtype)
-        V_shared = T.alloc_shared([block_N, dim], dtype)
-        acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-        acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-        acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-        scores_max = T.alloc_fragment([block_M], accum_dtype)
-        scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-        scores_scale = T.alloc_fragment([block_M], accum_dtype)
-        scores_sum = T.alloc_fragment([block_M], accum_dtype)
-        logsum = T.alloc_fragment([block_M], accum_dtype)
+import os
 
-        T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
-        T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
-        T.fill(acc_o, 0)
-        T.fill(logsum, 0)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        loop_range = (
-            T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
-        )
-        for k in T.Pipelined(loop_range, num_stages=num_stages):
-            T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
-            if is_casual:
-                for i, j in T.Parallel(block_M, block_N):
-                    acc_s[i, j] = T.if_then_else(
-                        bx * block_M + i >= k * block_N + j, 0, -T.infinity(acc_s.dtype)
-                    )
-            else:
-                T.clear(acc_s)
-            T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-            T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
-            for i, j in T.Parallel(block_M, dim):
-                acc_s[i, j] *= scale
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            for i in T.Parallel(block_M):
-                scores_scale[i] = T.exp2(scores_max_prev[i] - scores_max[i])
-            for i, j in T.Parallel(block_M, dim):
-                acc_o[i, j] *= scores_scale[i]
-            for i, j in T.Parallel(block_M, block_N):
-                acc_s[i, j] = T.exp2(acc_s[i, j] - scores_max[i])
-            T.copy(acc_s, acc_s_cast)
-            T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-            T.reduce_sum(acc_s, scores_sum, dim=1)
-            for i in T.Parallel(block_M):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-        for i, j in T.Parallel(block_M, dim):
-            acc_o[i, j] /= logsum[i]
-        T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
+def find_lib_path():
+    curr_path = os.path.dirname(os.path.abspath(__file__))
+    lib_path = []
+    for lib in ['libyour_project.so', 'libyour_project.dylib', 'your_project.dll']:
+        full_path = os.path.join(curr_path, lib)
+        if os.path.exists(full_path):
+            lib_path.append(full_path)
+    if not lib_path:
+        raise RuntimeError("Cannot find your_project library")
+    return lib_path
 ```
 
-### Dequantization GEMM
+## Examples
 
-An example of implementing a dequantization GEMM:
+### Adding a Custom Pass
+
+**C++ Implementation (`src/my_pass.cc`):**
+
+```cpp
+#include <tvm/tir/transform.h>
+
+namespace tvm {
+namespace tir {
+namespace transform {
+
+tvm::transform::Pass MyCustomPass() {
+    auto pass_func = [](PrimFunc f, IRModule m, PassContext ctx) {
+        // Implement your pass logic here
+        return f;
+    };
+    return tvm::transform::CreatePrimFuncPass(pass_func, 0, "MyCustomPass", {});
+}
+
+TVM_REGISTER_GLOBAL("my_project.transform.MyCustomPass")
+.set_body_typed(MyCustomPass);
+
+}  // namespace transform
+}  // namespace tir
+}  // namespace tvm
+```
+
+**Python Usage:**
 
 ```python
-@T.prim_func
-def dequant_matmul(
-    A: T.Buffer(A_shape, in_dtype),
-    B: T.Buffer(B_shape, storage_dtype),
-    Ct: T.Buffer((N, M), out_dtype),
-):
-    with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
-        A_shared = T.alloc_shared(A_shared_shape, in_dtype)
-        B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
-        B_local = T.alloc_fragment(B_shared_shape, storage_dtype)
-        B_dequantize_local = T.alloc_fragment(B_dequantize_shared_shape, in_dtype)
-        Ct_local = T.alloc_fragment((block_N, block_M), accum_dtype)
+import tvm
+import your_project.transform
 
-        T.clear(Ct_local)
-        for k in T.Pipelined(
-            T.ceildiv(K, block_K), 
-            num_stages=num_stages
-        ):
-            T.copy(A[by * block_M, k * block_K], A_shared)
-            T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
-            T.copy(B_shared, B_local)
-            for i, j in T.Parallel(block_N, block_K):
-                B_dequantize_local[i, j] = _tir_packed_to_unsigned_convert("int", 8)(
-                    num_bits,
-                    B_local[i, j // 2],
-                    j % 2,
-                    dtype=in_dtype,
-                )
-            T.gemm(B_dequantize_local, A_shared, Ct_local, transpose_B=True)
-        T.copy(Ct_local, Ct[bx * block_N, by * block_M])
+mod = ...  # your IRModule
+mod = your_project.transform.MyCustomPass()(mod)
 ```
 
-## Roadmap
-- [ ] **Seperate TVM Library and Tile Language**.
-- [ ] **Transform BitBLAS 3rdparty tvm into tl_core branch and tilelang**.
+### Adding a Custom Code Generator
 
----
+Similar to adding a pass, you can register custom code generators and use them in your compilation flow.
+
+## Benefits of This Approach
+
+- **Upstream Compatibility**: Easily update TVM to the latest version without merging conflicts.
+- **Ease of Collaboration**: Contributors can work on your project without dealing with a modified TVM.
+- **Modularity**: Separate concerns between your extensions and TVM's core functionalities.
+- **Reduced Maintenance**: Focus on your project's logic without worrying about TVM's internals.
+- **Community Integration**: Facilitate sharing and potentially upstreaming your extensions.
 
 
-TileLang has now been used in project [BitBLAS](https://github.com/microsoft/BitBLAS).
+## Acknowledgments
 
-Feel free to explore the repository and contribute to the project. If you have any questions or suggestions, please open an issue or contact the authors. This project is co-authored by [nox-410](https://github.com/nox-410), [chengyupku](https://github.com/chengyupku), and [LeiWang1999](https://github.com/LeiWang1999).
+This project is inspired by the modular build approach used in [MLC-LLM](https://github.com/mlc-ai/mlc-llm). Special thanks to the Apache TVM community for providing a powerful and flexible deep learning compiler infrastructure.
